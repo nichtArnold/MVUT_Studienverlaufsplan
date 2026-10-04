@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Studienverlaufsplan Master Verfahrens- und Umwelttechnik</title>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<style>
+/* ===== ÄNDERN (Optik): Farben, Schriftgrößen, Abstände ================== */
+ body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#f4f5f7;color:#222}
+ header{background:#003c64;color:#fff;padding:10px 18px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+ header h1{font-size:17px;margin:0 14px 0 0}
+ select,button{padding:5px 9px;font-size:13px}
+ #gesamt,#status{font-size:12.5px;background:#ffffff22;padding:4px 10px;border-radius:4px}
+ main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+ #pool{width:230px;background:#fff;border:1px solid #ccc;border-radius:6px;padding:9px;flex:0 0 auto}
+
+ /* Kern des Zeilenumbruchs: Raster mit variabler Spaltenzahl je Reihe.
+    Der Wert --sp wird per JavaScript aus KONFIG.proZeile gesetzt. */
+ #plan{flex:1;display:grid;grid-template-columns:repeat(var(--sp,2),minmax(0,1fr));gap:10px}
+
+ .spalte{background:#fff;border:1px solid #ccc;border-radius:6px;padding:8px;min-width:0}
+ .spalte h3{font-size:14px;margin:0}
+ .kopf{font-size:12px;color:#555;margin:2px 0 8px}
+ .liste{min-height:150px}        /* ÄNDERN: Mindesthöhe der Ablagefläche */
+ #poolListe{min-height:120px}
+ .gesperrt{background:#fafafa}
+ .kachel{background:#e8f0f8;border:1px solid #8fb0cc;border-left:5px solid #2b6ca3;
+         border-radius:4px;padding:5px 7px;margin-bottom:5px;font-size:12.5px;cursor:grab;
+         line-height:1.25;overflow-wrap:anywhere}
+ .kachel small{color:#555;font-size:11px}
+ .ovl{border-left-color:#e08600}
+ .flex{border-left-color:#2e7d32}
+ .locked{background:#eceff1;border-left-color:#555;cursor:not-allowed}
+ .warn{outline:2px solid #c62828}
+ .ok{color:#2e7d32}.hoch{color:#c62828;font-weight:bold}
+ #hinweise{padding:0 16px 22px;font-size:13px}
+ #hinweise p{margin:3px 0}
+ .legende{font-size:11.5px;color:#444;margin-top:10px;border-top:1px solid #ddd;padding-top:6px}
+ #drucktitel{display:none}
+
+/* ===== DRUCK: eine DIN-A4-Seite im Querformat =========================== */
+@media print{
+  @page{ size:A4 landscape; margin:8mm; }   /* ÄNDERN: Seitenrand */
+  html,body{background:#fff;margin:0;padding:0;
+            -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  header,#pool,button,select{display:none !important}
+  #drucktitel{display:block;font-size:11pt;font-weight:bold;margin:0 0 3mm}
+  main{display:block;padding:0;margin:0}
+  #plan{gap:2mm}
+  .spalte{padding:2mm;border:0.3mm solid #999;border-radius:1mm;
+          break-inside:avoid;page-break-inside:avoid}
+  .spalte h3{font-size:9pt}
+  .kopf{font-size:8pt;margin:0 0 1.5mm}
+  .liste{min-height:0 !important}
+  .kachel{font-size:7.5pt;line-height:1.2;padding:1mm 1.5mm;margin-bottom:1mm;
+          border-left-width:1.2mm;cursor:auto;hyphens:auto;break-inside:avoid}
+  .kachel small{font-size:6.5pt}
+  #hinweise{padding:2mm 0 0;font-size:7pt}
+}
+</style>
+</head>
+<body>
+
+<header>
+ <h1>Master Verfahrens- und Umwelttechnik</h1>
+ <label>Zeitmodell
+  <select id="zeit"><option value="vz">Vollzeit</option><option value="tz">Teilzeit</option></select>
+ </label>
+ <label>Studienbeginn
+  <select id="start"><option value="W">Wintersemester</option><option value="S">Sommersemester</option></select>
+ </label>
+ <button id="muster">Musterplan einsetzen</button>
+ <button id="leer">Alles in den Pool</button>
+ <button id="print">Drucken / PDF</button>
+ <span id="gesamt"></span>
+ <span id="status"></span>
+</header>
+
+<div id="drucktitel"></div>
+
+<main>
+ <aside id="pool">
+   <h3 style="margin:0 0 6px;font-size:14px">Modulpool</h3>
+   <div class="liste" id="poolListe"></div>
+   <div class="legende">
+     <b>Legende</b><br>
+     grau = fest verankert<br>
+     orange = OVL-Modul (vor dem Planspiel)<br>
+     grün = frei verschiebbar<br><br>
+     Der Stand wird automatisch im Browser gespeichert.
+   </div>
+ </aside>
+ <section id="plan"></section>
+</main>
+
+<div id="hinweise"></div>
+
+<script>
+/* ==========================================================================
+   1. STELLSCHRAUBEN
+   ========================================================================== */
+const CP_STD   = 5;    // ÄNDERN: Standard-CP je Modul ohne eigenen cp-Eintrag
+const CP_ZIEL  = 120;  // ÄNDERN: Gesamt-CP des Studiengangs
+const TOLERANZ = 5;    // ÄNDERN: erlaubte Überschreitung je Semester
+
+/* ÄNDERN: Semesterzahl, CP-Richtwert, gesperrte Semester und Spalten je Reihe.
+   proZeile steuert den Zeilenumbruch im Plan (4 Semester -> 2, 6 -> 3). */
+const KONFIG = {
+  vz:{ semester:4, ziel:30, gesperrt:[4], proZeile:2 },
+  tz:{ semester:6, ziel:20, gesperrt:[5,6], proZeile:3 }
+};
+
+/* ÄNDERN: Namensraum der Speicherung. Wird die Modulliste grundlegend
+   geändert, Version hochzählen, damit alte Stände verworfen werden. */
+const SPEICHER = "svp_vut_v1_";
+
+/* ==========================================================================
+   2. MODULDATEN
+   id/name/cp/angebot wie bisher; ovl = Teil der Orientierungsvorleistung;
+   nurIn = nur in diesem Zeitmodell; fest = gesperrte Position;
+   start = Vorschlag, der ausschließlich über "Musterplan" gesetzt wird.
+   ========================================================================== */
+const MODULE = [
+ {id:"MVT32", name:"MVT 3.2 Handhabung disperser Systeme", angebot:["W"], ovl:true,
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"TVT31", name:"TVT 3.1 Energieeffizienz von Anlagen", angebot:["W"], ovl:true,
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+ {id:"CVT3",  name:"CVT 3 Anlagensicherheit und Scale-Up", angebot:["W"], ovl:true,
+  start:{vz_W:1, vz_S:2, tz_W:1, tz_S:2}},
+
+ {id:"MVT31", name:"MVT 3.1 Processing of Primary and Secondary Raw Materials", angebot:["S"], ovl:true,
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"TVT32", name:"TVT 3.2 Thermische Trennverfahren 3", angebot:["S"], ovl:true,
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+
+ {id:"SMC",  name:"Sustainable Management and Communication", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:3, tz_S:4}},
+ {id:"CLCG", name:"Controlling, Leadership and Corporate Governance", angebot:["W"],
+  start:{vz_W:1, vz_S:2, tz_W:3, tz_S:4}},
+ {id:"HSE",  name:"Health and Safety / Environmental Aspects", cp:5, angebot:["W"],
+  start:{vz_W:3, vz_S:2, tz_W:3, tz_S:4}},
+
+ {id:"URT2", name:"Umwelt- und Recyclingtechnik 2", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"MEM",  name:"Membranen in der VUT", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:2, tz_S:1}},
+ {id:"UAM2", name:"Umweltanalytik und Messtechnik 2", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:4, tz_S:3}},
+ {id:"MPSP", name:"Mine- and Processing Site Planning / Feasibility Studies", angebot:["S"],
+  start:{vz_W:2, vz_S:1, tz_W:4, tz_S:3}},
+
+ {id:"SIM3", name:"Simulation 3", angebot:["S","W"],
+  start:{vz_W:3, vz_S:3, tz_W:4, tz_S:3}},
+ {id:"WPM",  name:"Wahlpflichtmodul", angebot:["S","W"],
+  start:{vz_W:3, vz_S:3, tz_W:4, tz_S:3}},
+ {id:"METH", name:"Methoden der Verfahrenstechnik", angebot:["S","W"],
+  start:{vz_W:3, vz_S:3, tz_W:3, tz_S:4}},
+ {id:"MWA",  name:"Methodik des wissenschaftlichen Arbeitens in der VUT", angebot:["S","W"],
+  start:{vz_W:1, vz_S:3, tz_W:1, tz_S:2}},
+
+ {id:"PLAN", name:"Planung einer verfahrenstechnischen Anlage", cp:10, angebot:["S","W"],
+  ovlPflicht:true,
+  fest:{vz_W:3, vz_S:3, tz_W:5, tz_S:5}},
+
+ {id:"MA",   name:"Masterarbeit mit Kolloquium", cp:30, angebot:["S","W"], nurIn:["vz"],
+  fest:{vz_W:4, vz_S:4}},
+ {id:"MA1",  name:"Masterarbeit – Bearbeitungsphase 1", cp:10, angebot:["S","W"], nurIn:["tz"],
+  fest:{tz_W:5, tz_S:5}},
+ {id:"MA2",  name:"Masterarbeit – Abschluss und Kolloquium", cp:20, angebot:["S","W"], nurIn:["tz"],
+  fest:{tz_W:6, tz_S:6}}
+];
+
+/* ==========================================================================
+   3. LOGIK  (ab hier normalerweise keine Änderungen nötig)
+   ========================================================================== */
+const NAME = {S:"Sommersemester", W:"Wintersemester"};
+const zeit        = () => document.getElementById("zeit").value;
+const saisonStart = () => document.getElementById("start").value;
+const variante    = () => zeit()+"_"+saisonStart();
+const modul = id => MODULE.find(m=>m.id===id);
+const cpVon = m => m.cp ?? CP_STD;
+const aktiv = m => !m.nurIn || m.nurIn.includes(zeit());
+
+/* ---- Speicherung im Browser ------------------------------------------- */
+function schluessel(){ return SPEICHER + variante(); }
+
+function standSpeichern(){
+  const daten={ts:Date.now(), stand:[]};
+  document.querySelectorAll("#plan .liste").forEach(l=>{
+    l.querySelectorAll(".kachel").forEach(el=>daten.stand.push({id:el.dataset.id, sem:+l.dataset.sem}));
+  });
+  document.querySelectorAll("#poolListe .kachel")
+    .forEach(el=>daten.stand.push({id:el.dataset.id, sem:0}));   /* 0 = Pool */
+  try{
+    localStorage.setItem(schluessel(), JSON.stringify(daten));
+    melden("Stand gespeichert "+new Date(daten.ts).toLocaleTimeString("de-DE"));
+  }catch(e){ melden("Speichern im Browser nicht möglich"); }
+}
+function standLaden(){
+  try{ return JSON.parse(localStorage.getItem(schluessel())||"null"); }catch(e){ return null; }
+}
+function melden(t){ document.getElementById("status").textContent=t; }
+
+/* ---- Semesterfolge ----------------------------------------------------- */
+function semesterfolge(){
+  const n=KONFIG[zeit()].semester, s0=saisonStart();
+  return Array.from({length:n},(_,i)=>({nr:i+1, saison:(i%2===0)?s0:(s0==="W"?"S":"W")}));
+}
+
+/* ---- Aufbau ------------------------------------------------------------
+   modus "auto"   : gespeicherten Stand laden, sonst leerer Plan
+   modus "muster" : Vorschlagswerte aus start einsetzen
+   modus "leer"   : alle verschiebbaren Module in den Pool
+   ------------------------------------------------------------------------ */
+function aufbauen(modus="auto"){
+  const plan=document.getElementById("plan"), pool=document.getElementById("poolListe");
+  plan.innerHTML=""; pool.innerHTML="";
+  const v=variante(), k=KONFIG[zeit()], folge=semesterfolge();
+
+  plan.style.setProperty("--sp", k.proZeile);   /* Spalten je Reihe */
+
+  folge.forEach(s=>{
+    const gesperrt=k.gesperrt.includes(s.nr);
+    const sp=document.createElement("div");
+    sp.className="spalte";
+    sp.innerHTML=`<h3>${s.nr}. Semester</h3>
+      <div class="kopf">${NAME[s.saison]} · <span class="cp">0</span> / ${k.ziel} CP</div>
+      <div class="liste ${gesperrt?"gesperrt":""}" data-sem="${s.nr}"
+           data-saison="${s.saison}" data-gesperrt="${gesperrt}"></div>`;
+    plan.appendChild(sp);
+  });
+
+  const gespeichert = (modus==="auto") ? standLaden() : null;
+  const pos={}; if(gespeichert) gespeichert.stand.forEach(e=>pos[e.id]=e.sem);
+
+  MODULE.filter(aktiv).forEach(m=>{
+    const fest=m.fest?.[v];
+    let ziel=null;
+    if(fest) ziel=fest;
+    else if(gespeichert && pos[m.id]!==undefined) ziel=pos[m.id]||null;
+    else if(modus==="muster") ziel=m.start?.[v] ?? null;
+
+    /* Plausibilität: Semester vorhanden, Saison passend, nicht gesperrt */
+    if(ziel && !fest){
+      const s=folge[ziel-1];
+      if(!s || !m.angebot.includes(s.saison) || k.gesperrt.includes(ziel)) ziel=null;
+    }
+
+    const kach=document.createElement("div");
+    kach.className="kachel"+(fest?" locked":"")+(m.ovl?" ovl":(!fest?" flex":""));
+    kach.dataset.id=m.id;
+    const saisonText = m.angebot.length===2 ? "ganzjährig" : "nur "+NAME[m.angebot[0]];
+    kach.innerHTML=`${m.name}<br><small>${cpVon(m)} CP · ${saisonText}${m.ovl?" · OVL":""}</small>`;
+    (ziel ? plan.querySelector(`.liste[data-sem="${ziel}"]`) : pool).appendChild(kach);
+  });
+
+  document.querySelectorAll(".liste").forEach(l=>{
+    Sortable.create(l,{
+      group:"module", animation:120, filter:".locked",
+      onMove:evt=>{
+        const ziel=evt.to;
+        if(ziel.dataset.gesperrt==="true") return false;
+        const saison=ziel.dataset.saison;
+        if(!saison) return true;                       /* Pool immer erlaubt */
+        return modul(evt.dragged.dataset.id).angebot.includes(saison);
+      },
+      onSort:()=>{ pruefen(); standSpeichern(); }      /* automatische Sicherung */
+    });
+  });
+
+  document.getElementById("drucktitel").textContent =
+    "Studienverlaufsplan Master Verfahrens- und Umwelttechnik – "
+    + (zeit()==="vz" ? "Vollzeit, 4 Semester" : "Teilzeit, 6 Semester")
+    + ", Beginn im " + NAME[saisonStart()];
+
+  pruefen();
+  if(modus!=="auto") standSpeichern();
+  else if(gespeichert) melden("Gespeicherter Stand geladen");
+  else melden("Neuer Plan");
+}
+
+/* ---- Prüfung ----------------------------------------------------------- */
+function pruefen(){
+  const k=KONFIG[zeit()], lage={}, meldungen=[]; let gesamt=0;
+  document.querySelectorAll(".kachel").forEach(el=>el.classList.remove("warn"));
+
+  document.querySelectorAll("#plan .liste").forEach(l=>{
+    const nr=+l.dataset.sem; let summe=0;
+    l.querySelectorAll(".kachel").forEach(el=>{
+      lage[el.dataset.id]=nr; summe+=cpVon(modul(el.dataset.id));
+    });
+    gesamt+=summe;
+    const feld=l.parentElement.querySelector(".cp");
+    feld.textContent=summe;
+    feld.parentElement.className="kopf "+(summe>k.ziel+TOLERANZ?"hoch":"ok");
+    if(summe>k.ziel+TOLERANZ)
+      meldungen.push([`${nr}. Semester: ${summe} CP überschreiten den Richtwert von ${k.ziel} CP deutlich.`,"warn"]);
+  });
+
+  const planM=MODULE.find(m=>m.ovlPflicht && aktiv(m));
+  if(planM && lage[planM.id]){
+    MODULE.filter(m=>m.ovl && aktiv(m)).forEach(o=>{
+      if(!lage[o.id] || lage[o.id] >= lage[planM.id]){
+        meldungen.push([`${o.name}: muss vor „${planM.name}“ (Semester ${lage[planM.id]}) liegen.`,"warn"]);
+        const el=document.querySelector(`.kachel[data-id="${o.id}"]`); if(el) el.classList.add("warn");
+      }
+    });
+  }
+
+  const offen=document.querySelectorAll("#poolListe .kachel").length;
+  if(offen) meldungen.push([`${offen} Modul(e) liegen noch im Pool und sind nicht eingeplant.`,"info"]);
+
+  const diff=CP_ZIEL-gesamt;
+  document.getElementById("gesamt").textContent =
+    `Summe: ${gesamt} / ${CP_ZIEL} CP` + (diff!==0 ? `  (Differenz ${diff>0?"−":"+"}${Math.abs(diff)})` : "");
+
+  document.getElementById("hinweise").innerHTML =
+    meldungen.length
+      ? meldungen.map(([t,typ])=>`<p style="color:${typ==="warn"?"#b00":"#555"}">${typ==="warn"?"⚠":"ℹ"} ${t}</p>`).join("")
+      : `<p style="color:#2e7d32">✓ Der Plan erfüllt alle hinterlegten Bedingungen.</p>`;
+}
+
+document.getElementById("zeit").onchange  = ()=>aufbauen("auto");
+document.getElementById("start").onchange = ()=>aufbauen("auto");
+document.getElementById("muster").onclick = ()=>aufbauen("muster");
+document.getElementById("leer").onclick   = ()=>aufbauen("leer");
+document.getElementById("print").onclick  = ()=>window.print();
+aufbauen("auto");
+</script>
+</body>
+</html>
